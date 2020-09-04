@@ -1,2 +1,2 @@
-# PointBasdSphericalCNN
+# PointBasedSphericalCNN
 Point based Spherical CNN
