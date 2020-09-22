@@ -1,5 +1,6 @@
 # pylint: disable=E1101,R,C
 import csv
+import ctypes
 import errno
 import glob
 import os
@@ -121,7 +122,7 @@ def render_model(mesh, sgrid):
 
 def linear_regression(northwest: np.ndarray=None, north:np.ndarray=None, northeast:np.ndarray=None,
                       west:np.ndarray=None, center:np.ndarray=None, east:np.ndarray=None,
-                      southwest:np.ndarray=None, south:np.ndarray=None, southeast:np.ndarray=None):
+                      southwest:np.ndarray=None, south:np.ndarray=None, southeast:np.ndarray=None,lib=None):
     lr = LinearRegression(copy_X=True, fit_intercept=True, n_jobs=1, normalize=False)
     coef = np.zeros((center.shape[0],2))
     intercept = np.zeros((center.shape[0],1))
@@ -143,27 +144,43 @@ def linear_regression(northwest: np.ndarray=None, north:np.ndarray=None, northea
     if southeast is not None:
         points = np.concatenate((points, southeast),axis=0)
     points=points.reshape(-1,center.shape[0],center.shape[1])
+    points=np.transpose(points,(1,0,2))
     #def thread(start,stop):
-    for index in range(center.shape[0]):
-        #points = np.stack((northwest[index], north[index], northeast[index], west[index], center[index], east[index], southwest[index], south[index], southeast[index]), axis=0)
-        X = points[:, index, 0:2]
-        Y = points[:, index, 2]
-        reg = lr.fit(X, Y)
-        # coef = reg.coef_
-        coef[index] = reg.coef_
-        # intercept = reg.intercept_
-        intercept[index] = reg.intercept_
+
     """
-    threads=[]
-    mid=int(center.shape[0]/2)
-    t1=threading.Thread(target=thread,args=(0,mid))
-    threads.append(t1)
-    t2 = threading.Thread(target=thread, args=(mid, center.shape[0]))
-    threads.append(t2)
-    for t in threads:
-        t.setDaemon(True)
-        t.start()
-    t.join()
+    for index in range(center.shape[0]):
+    #points = np.stack((northwest[index], north[index], northeast[index], west[index], center[index], east[index], southwest[index], south[index], southeast[index]), axis=0)
+    X = points[index, :, 0:2]
+    Y = points[index, :, 2]
+    reg = lr.fit(X, Y)
+    # coef = reg.coef_
+    coef[index] = reg.coef_
+    # intercept = reg.intercept_
+    intercept[index] = reg.intercept_
+    """
+
+
+    if lib is None:
+        _file = 'libmatrix.so'
+        _path = '/data2/tzf/s2cnn-master/draft/' + _file
+        lib = ctypes.cdll.LoadLibrary(_path)
+    points=points.astype(np.float32)
+    m=np.zeros((center.shape[0],3))
+    m=m.astype(np.float32)
+
+    c_test = lib._linear_regression
+    c_test.restype = None
+    c_test.argtypes = [
+        np.ctypeslib.ndpointer(dtype=np.float32, ndim=3),
+        np.ctypeslib.ndpointer(dtype=np.int32, ndim=1),
+        np.ctypeslib.ndpointer(dtype=np.float32, ndim=2),
+    ]
+
+    c_test(points, np.array(points.shape).astype(np.int32), m)
+    intercept[:,0] = m[:,2]
+    coef = m[:,0:2]
+    """
+    
     """
 
     return coef, intercept
@@ -279,7 +296,7 @@ def interpolate(m: np.ndarray, n: np.ndarray, sgrid: np.ndarray, points_on_spher
     dist_im = 1 - dist_im
     return dist_im, center_grid, east_grid, south_grid, southeast_grid
 
-def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray):
+def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray,lib):
     #print("angle")
     """
     m=m.copy()
@@ -331,8 +348,8 @@ def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray):
         southeast_points[mask_north] = sgrid[m_north + 1, n_north_plus_one] * (1 - np.repeat(dist_im[m_north + 1, n_north_plus_one], 3).reshape(-1, 3))
 
         coef[mask_north,:], intercept[mask_north] = linear_regression(northwest=None, north=None, northeast=None,
-                                                                    west=west_points[mask_north], center=center_points[mask_north], east=east_points[mask_north],
-                                                                    southwest=southwest_points[mask_north], south=south_points[mask_north], southeast=southeast_points[mask_north])
+                                                                      west=west_points[mask_north], center=center_points[mask_north], east=east_points[mask_north],
+                                                                      southwest=southwest_points[mask_north], south=south_points[mask_north], southeast=southeast_points[mask_north],lib=lib)
 
     # calculate the coef & intercept of points on the south boundary
     time_before_south=time.perf_counter()
@@ -353,7 +370,7 @@ def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray):
 
         coef[mask_south,:], intercept[mask_south] = linear_regression(northwest=northwest_points[mask_south], north=north_points[mask_south], northeast=northeast_points[mask_south],
                                                                     west=west_points[mask_south], center=center_points[mask_south], east=east_points[mask_south],
-                                                                    southwest=None, south=None, southeast=None)
+                                                                    southwest=None, south=None, southeast=None,lib=lib)
 
     #calculate the rest points
     time_before_rest=time.perf_counter()
@@ -379,7 +396,7 @@ def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray):
     #print(time_before_lr-time_before_rest)
     coef[mask_rest,:], intercept[mask_rest] = linear_regression(northwest=northwest_points[mask_rest], north=north_points[mask_rest], northeast=northeast_points[mask_rest],
                                                                 west=west_points[mask_rest], center=center_points[mask_rest], east=east_points[mask_rest],
-                                                                southwest=southwest_points[mask_rest], south=south_points[mask_rest], southeast=southeast_points[mask_rest])
+                                                                southwest=southwest_points[mask_rest], south=south_points[mask_rest], southeast=southeast_points[mask_rest],lib=lib)
     time_after_lr=time.perf_counter()
     #print("time_after_lr - time_before_lr")
     #print(time_after_lr - time_before_lr)
@@ -390,7 +407,7 @@ def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray):
     normals[:,0:2] = coef
     normals[:,2] = -1
     normalized_normals = normals / np.linalg.norm(normals, axis=1, keepdims=True)
-    #dot_im[m,n]=np.abs(np.einsum("ij,ij->i", normalized_normals, sgrid[m,n]))
+    dot_im[m,n]=np.abs(np.einsum("ij,ij->i", normalized_normals, sgrid[m,n]))
     nx, ny, nz = normalized_normals[:, 0], normalized_normals[:, 1], normalized_normals[:, 2]
     cx, cy, cz = center_points[:, 0], center_points[:, 1], center_points[:, 2]
     cross_im[m,n]=np.sqrt((nx * cy - ny * cx) ** 2 + (nx * cz - nz * cx) ** 2 + (ny * cz - nz * cy) ** 2)
@@ -401,7 +418,7 @@ def angle(m:np.ndarray,n:np.ndarray,sgrid:np.ndarray,dist_im:np.ndarray):
     #return 1,1
 
 
-def inverse_render_model(points: np.ndarray, sgrid: np.ndarray):
+def inverse_render_model(points: np.ndarray, sgrid: np.ndarray,lib):
     # wait for implementing
     #print("InverseRenderModel")
     try:
@@ -450,7 +467,7 @@ def inverse_render_model(points: np.ndarray, sgrid: np.ndarray):
     dist_im, center_grid, east_grid, south_grid, southeast_grid = interpolate(m=m, n=n, sgrid=sgrid,
                                                                               points_on_sphere=points_on_sphere,
                                                                               radius=radius)
-    dot_img, cross_img = angle(m=m, n=n, sgrid=sgrid, dist_im=dist_im)
+    dot_img, cross_img = angle(m=m, n=n, sgrid=sgrid, dist_im=dist_im,lib=lib)
     #dist_im=dist_im.reshape(-1,1)
 
 
@@ -565,14 +582,14 @@ class ProjectOnSphere:
 
 class ProjectFromPointsOnSphere:
     # Wait for implementing
-    def __init__(self, bandwidth):
+    def __init__(self, bandwidth,lib):
         self.bandwidth = bandwidth
         self.sgrid = make_sgrid(bandwidth, alpha=0, beta=0, gamma=0)  # create a sphere grid
-
+        self.lib=lib
 
     def __call__(self, points):
         #print("ProjectFromPointsOnSPhere")
-        im = inverse_render_model(points, self.sgrid)
+        im = inverse_render_model(points, self.sgrid,self.lib)
         im = im.astype(np.float32)
         return im
 
